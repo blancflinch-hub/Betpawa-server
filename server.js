@@ -14,22 +14,22 @@ let liveData = {
     last_updated: "Never"
 };
 
-// 2. START SERVER FIRST (Fixes the Boot Loop)
+// 2. START SERVER IMMEDIATELY
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`✅ Server is ALIVE on port ${PORT}`);
     startScraper(); 
 });
 
-// API ENDPOINT
 app.get('/', (req, res) => {
     res.json(liveData);
 });
 
-// 3. BACKGROUND SCRAPER
+// 3. STEALTH SCRAPER (Mobile Mode)
 async function startScraper() {
     try {
-        console.log("🚀 Launching Browser...");
+        console.log("🚀 Launching Stealth Browser...");
+        
         const browser = await puppeteer.launch({
             headless: "new",
             args: [
@@ -46,35 +46,60 @@ async function startScraper() {
 
         const page = await browser.newPage();
 
-        // Block heavy assets
+        // TRICK: Pretend to be an iPhone to get the lightweight mobile site
+        await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1');
+        await page.setViewport({ width: 375, height: 667 });
+
+        // BLOCK IMAGES & FONTS (Speed Boost)
         await page.setRequestInterception(true);
         page.on('request', (req) => {
-            if(['image', 'stylesheet', 'font'].includes(req.resourceType())){
+            if(['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())){
                 req.abort();
             } else {
                 req.continue();
             }
         });
 
-        // Go to BetPawa
+        console.log("Navigating to BetPawa...");
+        // Use the generic virtuals URL, it redirects to the correct country automatically
         await page.goto('https://www.betpawa.com.gh/virtual-sports', {
-            waitUntil: 'domcontentloaded',
-            timeout: 0 
+            waitUntil: 'networkidle2',
+            timeout: 60000 
         });
-        console.log("✅ Connected to BetPawa!");
 
-        // The Loop
+        console.log("✅ Connected! Scanning for teams...");
+
         setInterval(async () => {
             try {
+                // Try 3 different ways to find team names (BetPawa changes code often)
                 const data = await page.evaluate(() => {
-                    const teams = document.querySelectorAll('.virtual-match-team');
+                    // Strategy 1: Standard Virtual Class
+                    let teams = document.querySelectorAll('.virtual-match-team');
+                    
+                    // Strategy 2: If Mobile site uses different class
+                    if (teams.length < 2) {
+                        teams = document.querySelectorAll('.match-teams');
+                    }
+                    
+                    // Strategy 3: Look for team-like text in the active match container
+                    if (teams.length < 2) {
+                        // Advanced: Find the "VS" text and look around it
+                        const vsElement = Array.from(document.querySelectorAll('div, span')).find(el => el.innerText === 'v' || el.innerText === 'VS');
+                        if (vsElement && vsElement.parentElement) {
+                            return { 
+                                home: vsElement.previousElementSibling?.innerText || "Scanning...", 
+                                away: vsElement.nextElementSibling?.innerText || "Scanning..." 
+                            };
+                        }
+                    }
+
                     if (teams && teams.length >= 2) {
                         return { home: teams[0].innerText, away: teams[1].innerText };
                     }
                     return null;
                 });
 
-                if (data) {
+                if (data && data.home !== "Scanning...") {
                     liveData = {
                         status: "Live",
                         match: `${data.home} vs ${data.away}`,
@@ -82,15 +107,17 @@ async function startScraper() {
                         away_team: data.away,
                         last_updated: new Date().toLocaleTimeString()
                     };
-                    console.log(`Game: ${liveData.match}`);
+                    console.log(`Updated: ${liveData.match}`);
                 }
             } catch (err) {
-                // Ignore glitch errors
+                // Keep silent on small errors
             }
-        }, 5000);
+        }, 3000); // Check every 3 seconds
 
     } catch (e) {
-        console.log("❌ Error:", e.message);
+        console.log("❌ Browser Error:", e.message);
         liveData.status = "Restarting Scraper...";
+        // If it crashes, wait 10 seconds and try again (Self-Healing)
+        setTimeout(startScraper, 10000);
     }
-            }
+}
