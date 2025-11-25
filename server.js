@@ -5,105 +5,99 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// GLOBAL VARIABLE TO STORE LATEST MATCH
+// 1. DATA STORE (Keeps the app alive even if scraper fails)
 let liveData = {
-    status: "Starting...",
-    match: "Waiting for data...",
-    home_team: "",
-    away_team: "",
+    status: "Initializing...",
+    match: "Waiting for sync...",
+    home_team: "Loading...",
+    away_team: "Loading...",
     last_updated: "Never"
 };
 
-// THE SCRAPER FUNCTION
-async function runScraper() {
-    console.log("Launching Browser...");
-    
-    // Launch Chrome with settings optimized for Cloud Servers
-    const browser = await puppeteer.launch({
-        headless: "new",
-        args: [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--single-process", 
-            "--no-zygote"
-        ],
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath(),
-    });
+// 2. THE TRICK: Start the Server FIRST (Before launching Chrome)
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`✅ Server is ALIVE on port ${PORT}`);
+    // Only launch the heavy browser AFTER the server is running
+    startScraper(); 
+});
 
-    const page = await browser.newPage();
-
-    // Block images to save speed and data
-    await page.setRequestInterception(true);
-    page.on('request', (req) => {
-        if(['image', 'stylesheet', 'font'].includes(req.resourceType())){
-            req.abort();
-        } else {
-            req.continue();
-        }
-    });
-
-    console.log("Going to BetPawa...");
-    
-    try {
-        // We use the Ghanaian site. It might redirect, but the scraper handles it.
-        await page.goto('https://www.betpawa.com.gh/virtual-sports', {
-            waitUntil: 'networkidle2',
-            timeout: 60000 
-        });
-
-        // Loop forever: Check for matches every 5 seconds
-        setInterval(async () => {
-            try {
-                // READ THE PAGE
-                const result = await page.evaluate(() => {
-                    // This selector looks for the team names. 
-                    // BetPawa structure changes, but this is the most common class.
-                    const teams = document.querySelectorAll('.virtual-match-team');
-                    
-                    if (teams && teams.length >= 2) {
-                        return {
-                            home: teams[0].innerText,
-                            away: teams[1].innerText
-                        };
-                    }
-                    return null;
-                });
-
-                if (result) {
-                    liveData = {
-                        status: "Live",
-                        match: `${result.home} vs ${result.away}`,
-                        home_team: result.home,
-                        away_team: result.away,
-                        last_updated: new Date().toLocaleTimeString()
-                    };
-                    console.log(`Updated: ${liveData.match}`);
-                } else {
-                    console.log("Scanning... No matches found yet.");
-                }
-
-            } catch (err) {
-                console.log("Scrape Error:", err.message);
-            }
-        }, 5000); // 5000ms = 5 seconds
-
-    } catch (e) {
-        console.log("Browser Crash:", e.message);
-        browser.close();
-    }
-}
-
-// Start the Scraper
-runScraper();
-
-// API ENDPOINT: This is what your phone app will talk to
+// API ENDPOINT
 app.get('/', (req, res) => {
     res.json(liveData);
 });
 
-// START SERVER
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+// 3. THE HEAVY LIFTING (Background Scraper)
+async function startScraper() {
+    try {
+        console.log("🚀 Launching Background Browser...");
+        
+        const browser = await puppeteer.launch({
+            headless: "new",
+            args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-accelerated-2d-canvas",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process", 
+                "--disable-gpu"
+            ],
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath(),
+        });
+
+        const page = await browser.newPage();
+
+        // Speed Optimization: Block Images/Fonts
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            if(['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())){
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+
+        // Go to BetPawa (Allowing generous timeout)
+        console.log("Navigating to BetPawa...");
+        await page.goto('https://www.betpawa.com.gh/virtual-sports', {
+            waitUntil: 'domcontentloaded',
+            timeout: 0 
+        });
+
+        console.log("✅ Browser Connected! Watching for matches...");
+
+        // The Loop
+        setInterval(async () => {
+            try {
+                const data = await page.evaluate(() => {
+                    // Generic selector for virtual teams
+                    const teams = document.querySelectorAll('.virtual-match-team');
+                    if (teams && teams.length >= 2) {
+                        return { home: teams[0].innerText, away: teams[1].innerText };
+                    }
+                    return null;
+                });
+
+                if (data) {
+                    liveData = {
+                        status: "Live",
+                        match: `${data.home} vs ${data.away}`,
+                        home_team: data.home,
+                        away_team: data.away,
+                        last_updated: new Date().toLocaleTimeString()
+                    };
+                    console.log(`Game Found: ${liveData.match}`);
+                }
+            } catch (err) {
+                // Ignore small errors, just keep loop running
+            }
+        }, 5000);
+
+    } catch (e) {
+        console.log("❌ Browser Error:", e.message);
+        // Important: Do not exit process, keep the server API alive
+        liveData.status = "Scraper Restarting...";
+    }
+}
