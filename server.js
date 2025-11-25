@@ -5,7 +5,7 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// 1. DATA STORE (Keeps the app alive even if scraper fails)
+// 1. DATA STORE
 let liveData = {
     status: "Initializing...",
     match: "Waiting for sync...",
@@ -14,11 +14,10 @@ let liveData = {
     last_updated: "Never"
 };
 
-// 2. THE TRICK: Start the Server FIRST (Before launching Chrome)
+// 2. START SERVER FIRST (Fixes the Boot Loop)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`✅ Server is ALIVE on port ${PORT}`);
-    // Only launch the heavy browser AFTER the server is running
     startScraper(); 
 });
 
@@ -27,11 +26,10 @@ app.get('/', (req, res) => {
     res.json(liveData);
 });
 
-// 3. THE HEAVY LIFTING (Background Scraper)
+// 3. BACKGROUND SCRAPER
 async function startScraper() {
     try {
-        console.log("🚀 Launching Background Browser...");
-        
+        console.log("🚀 Launching Browser...");
         const browser = await puppeteer.launch({
             headless: "new",
             args: [
@@ -40,7 +38,6 @@ async function startScraper() {
                 "--disable-dev-shm-usage",
                 "--disable-accelerated-2d-canvas",
                 "--no-first-run",
-                "--no-zygote",
                 "--single-process", 
                 "--disable-gpu"
             ],
@@ -49,30 +46,27 @@ async function startScraper() {
 
         const page = await browser.newPage();
 
-        // Speed Optimization: Block Images/Fonts
+        // Block heavy assets
         await page.setRequestInterception(true);
         page.on('request', (req) => {
-            if(['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())){
+            if(['image', 'stylesheet', 'font'].includes(req.resourceType())){
                 req.abort();
             } else {
                 req.continue();
             }
         });
 
-        // Go to BetPawa (Allowing generous timeout)
-        console.log("Navigating to BetPawa...");
+        // Go to BetPawa
         await page.goto('https://www.betpawa.com.gh/virtual-sports', {
             waitUntil: 'domcontentloaded',
             timeout: 0 
         });
-
-        console.log("✅ Browser Connected! Watching for matches...");
+        console.log("✅ Connected to BetPawa!");
 
         // The Loop
         setInterval(async () => {
             try {
                 const data = await page.evaluate(() => {
-                    // Generic selector for virtual teams
                     const teams = document.querySelectorAll('.virtual-match-team');
                     if (teams && teams.length >= 2) {
                         return { home: teams[0].innerText, away: teams[1].innerText };
@@ -88,16 +82,15 @@ async function startScraper() {
                         away_team: data.away,
                         last_updated: new Date().toLocaleTimeString()
                     };
-                    console.log(`Game Found: ${liveData.match}`);
+                    console.log(`Game: ${liveData.match}`);
                 }
             } catch (err) {
-                // Ignore small errors, just keep loop running
+                // Ignore glitch errors
             }
         }, 5000);
 
     } catch (e) {
-        console.log("❌ Browser Error:", e.message);
-        // Important: Do not exit process, keep the server API alive
-        liveData.status = "Scraper Restarting...";
+        console.log("❌ Error:", e.message);
+        liveData.status = "Restarting Scraper...";
     }
-}
+            }
