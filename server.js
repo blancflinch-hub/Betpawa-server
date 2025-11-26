@@ -1,3 +1,7 @@
+// --- CRITICAL FIX: DELETE STUCK SETTINGS ---
+delete process.env.PUPPETEER_EXECUTABLE_PATH;
+delete process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD;
+
 const express = require('express');
 const puppeteer = require('puppeteer');
 const cors = require('cors');
@@ -31,7 +35,7 @@ async function startScraper() {
     try {
         console.log("🚀 Launching Browser...");
         
-        // LAUNCH OPTIONS (Simplified)
+        // Launch using the internal downloaded browser
         const browser = await puppeteer.launch({
             headless: "new",
             args: [
@@ -44,20 +48,16 @@ async function startScraper() {
                 "--disable-gpu"
             ],
             ignoreHTTPSErrors: true
-            // REMOVED executablePath line so it uses the downloaded version
         });
 
         const page = await browser.newPage();
 
-        // Pretend to be Windows Chrome
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1280, height: 720 });
 
-        // BLOCK ASSETS
         await page.setRequestInterception(true);
         page.on('request', (req) => {
-            const type = req.resourceType();
-            if(['image', 'stylesheet', 'font', 'media'].includes(type)){
+            if(['image', 'stylesheet', 'font', 'media'].includes(req.resourceType())){
                 req.abort();
             } else {
                 req.continue();
@@ -92,12 +92,11 @@ async function startScraper() {
                         last_updated: new Date().toLocaleTimeString(),
                         debug_error: "None"
                     };
-                    console.log(`Updated: ${liveData.match}`);
                 } else {
-                    liveData.status = "Scanning (Page Loaded)...";
+                    liveData.status = "Scanning...";
                 }
             } catch (err) {
-                // Keep silent on small loop errors
+                // Ignore errors
             }
         }, 2000);
 
@@ -105,8 +104,6 @@ async function startScraper() {
         console.log("❌ CRITICAL ERROR:", e.message);
         liveData.status = "CRASHED - RESTARTING";
         liveData.debug_error = e.message; 
-        
-        // Restart after 15 seconds (give it time to cool down)
         setTimeout(startScraper, 15000);
     }
 }
