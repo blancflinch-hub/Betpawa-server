@@ -5,21 +5,20 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// 1. DATA STORE (With Error Reporting)
+// 1. DATA STORE
 let liveData = {
     status: "Initializing...",
     match: "Waiting for sync...",
     home_team: "Loading...",
     away_team: "Loading...",
     last_updated: "Never",
-    debug_error: "No Errors Yet" // <--- This will show us the problem if it fails
+    debug_error: "None"
 };
 
-// 2. START SERVER FIRST (To satisfy Render immediately)
+// 2. START SERVER
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`✅ Server is ALIVE on port ${PORT}`);
-    // Start the heavy browser in the background
     startScraper(); 
 });
 
@@ -27,12 +26,12 @@ app.get('/', (req, res) => {
     res.json(liveData);
 });
 
-// 3. ROBUST SCRAPER ENGINE
+// 3. SCRAPER
 async function startScraper() {
     try {
         console.log("🚀 Launching Browser...");
         
-        // Launch with extreme memory saving settings
+        // LAUNCH OPTIONS (Simplified)
         const browser = await puppeteer.launch({
             headless: "new",
             args: [
@@ -44,21 +43,21 @@ async function startScraper() {
                 "--single-process", 
                 "--disable-gpu"
             ],
-            ignoreHTTPSErrors: true, 
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || puppeteer.executablePath(),
+            ignoreHTTPSErrors: true
+            // REMOVED executablePath line so it uses the downloaded version
         });
 
         const page = await browser.newPage();
 
-        // Pretend to be a standard Desktop Browser (More stable than mobile)
+        // Pretend to be Windows Chrome
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36');
         await page.setViewport({ width: 1280, height: 720 });
 
-        // BLOCK EVERYTHING except Text (Speed Boost)
+        // BLOCK ASSETS
         await page.setRequestInterception(true);
         page.on('request', (req) => {
             const type = req.resourceType();
-            if(['image', 'stylesheet', 'font', 'media', 'other'].includes(type)){
+            if(['image', 'stylesheet', 'font', 'media'].includes(type)){
                 req.abort();
             } else {
                 req.continue();
@@ -67,10 +66,9 @@ async function startScraper() {
 
         console.log("Navigating to BetPawa...");
         
-        // CRITICAL FIX: Only wait for DOM to load, not the network
         await page.goto('https://www.betpawa.com.gh/virtual-sports', {
             waitUntil: 'domcontentloaded',
-            timeout: 45000 // 45 second timeout
+            timeout: 60000 
         });
 
         console.log("✅ Page Loaded! Starting scan loop...");
@@ -78,7 +76,6 @@ async function startScraper() {
         setInterval(async () => {
             try {
                 const data = await page.evaluate(() => {
-                    // Try the standard selector
                     const teams = document.querySelectorAll('.virtual-match-team');
                     if (teams && teams.length >= 2) {
                         return { home: teams[0].innerText, away: teams[1].innerText };
@@ -98,7 +95,6 @@ async function startScraper() {
                     console.log(`Updated: ${liveData.match}`);
                 } else {
                     liveData.status = "Scanning (Page Loaded)...";
-                    liveData.debug_error = "Selectors found no teams (Check BetPawa HTML)";
                 }
             } catch (err) {
                 // Keep silent on small loop errors
@@ -107,11 +103,10 @@ async function startScraper() {
 
     } catch (e) {
         console.log("❌ CRITICAL ERROR:", e.message);
-        // REPORT THE ERROR TO THE USER
         liveData.status = "CRASHED - RESTARTING";
         liveData.debug_error = e.message; 
         
-        // Auto-Restart after 10 seconds
-        setTimeout(startScraper, 10000);
+        // Restart after 15 seconds (give it time to cool down)
+        setTimeout(startScraper, 15000);
     }
 }
